@@ -5,12 +5,10 @@
  */
 package org.h2.command.dml;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.Map.Entry;
-
 import org.h2.api.ErrorCode;
 import org.h2.api.Trigger;
+import org.h2.cdc.CDKeeper;
+import org.h2.cdc.ChangeDataObject;
 import org.h2.command.Command;
 import org.h2.command.CommandInterface;
 import org.h2.engine.Right;
@@ -36,12 +34,18 @@ import org.h2.table.TableFilter;
 import org.h2.value.Value;
 import org.h2.value.ValueNull;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Map.Entry;
+
 /**
  * This class represents the statement
  * INSERT
  */
 public class Insert extends CommandWithValues implements ResultTarget, DataChangeStatement {
 
+    private static int a = 0;
     private Table table;
     private Column[] columns;
     private Query query;
@@ -52,20 +56,16 @@ public class Insert extends CommandWithValues implements ResultTarget, DataChang
      * This table filter is for MERGE..USING support - not used in stand-alone DML
      */
     private TableFilter sourceTableFilter;
-
     /**
      * For MySQL-style INSERT ... ON DUPLICATE KEY UPDATE ....
      */
     private HashMap<Column, Expression> duplicateKeyAssignmentMap;
-
     /**
      * For MySQL-style INSERT IGNORE and PostgreSQL-style ON CONFLICT DO
      * NOTHING.
      */
     private boolean ignore;
-
     private ResultTarget deltaChangeCollector;
-
     private ResultOption deltaChangeCollectionMode;
 
     public Insert(Session session) {
@@ -111,7 +111,7 @@ public class Insert extends CommandWithValues implements ResultTarget, DataChang
      * Keep a collection of the columns to pass to update if a duplicate key
      * happens, for MySQL-style INSERT ... ON DUPLICATE KEY UPDATE ....
      *
-     * @param column the column
+     * @param column     the column
      * @param expression the expression
      */
     public void addAssignmentForDuplicate(Column column, Expression expression) {
@@ -154,6 +154,11 @@ public class Insert extends CommandWithValues implements ResultTarget, DataChang
     }
 
     private int insertRows() {
+        ChangeDataObject cdObj = new ChangeDataObject("INSERT");
+        Map afterData = new HashMap<String, String>();
+        CDKeeper.setLastchange("Insert cdc ".concat(Integer.toString(a)));
+        a = a + 1;
+
         session.getUser().checkRight(table, Right.INSERT);
         setCurrentRowNumber(0);
         table.fire(session, Trigger.INSERT, true);
@@ -167,6 +172,7 @@ public class Insert extends CommandWithValues implements ResultTarget, DataChang
                 setCurrentRowNumber(x + 1);
                 for (int i = 0; i < columnLen; i++) {
                     Column c = columns[i];
+                    String colName = c.getName();
                     int index = c.getColumnId();
                     Expression e = expr[i];
                     if (e != null) {
@@ -174,6 +180,8 @@ public class Insert extends CommandWithValues implements ResultTarget, DataChang
                         e = e.optimize(session);
                         try {
                             Value v = e.getValue(session);
+                            String strValue = v.getString();
+                            afterData.put(colName, strValue);
                             newRow.setValue(index, v);
                         } catch (DbException ex) {
                             throw setRow(ex, x, getSimpleSQL(expr));
@@ -182,6 +190,8 @@ public class Insert extends CommandWithValues implements ResultTarget, DataChang
                 }
                 rowNumber++;
                 table.validateConvertUpdateSequence(session, newRow);
+                cdObj.setAfter(afterData);
+                CDKeeper.appendChangeData(cdObj);
                 if (deltaChangeCollectionMode == ResultOption.NEW) {
                     deltaChangeCollector.addRow(newRow.getValueList().clone());
                 }
@@ -318,7 +328,7 @@ public class Insert extends CommandWithValues implements ResultTarget, DataChang
                 for (int i = 0, len = expr.length; i < len; i++) {
                     Expression e = expr[i];
                     if (e != null) {
-                        if(sourceTableFilter!=null){
+                        if (sourceTableFilter != null) {
                             e.mapColumns(sourceTableFilter, 0, Expression.MAP_INITIAL);
                         }
                         e = e.optimize(session);
@@ -372,7 +382,7 @@ public class Insert extends CommandWithValues implements ResultTarget, DataChang
     }
 
     /**
-     * @param de duplicate key exception
+     * @param de         duplicate key exception
      * @param currentRow current row values (optional)
      * @return {@code true} if row was updated, {@code false} if row was ignored
      */
@@ -447,13 +457,13 @@ public class Insert extends CommandWithValues implements ResultTarget, DataChang
         final Column[] indexedColumns;
         if (foundIndex instanceof MVPrimaryIndex) {
             MVPrimaryIndex foundMV = (MVPrimaryIndex) foundIndex;
-            indexedColumns = new Column[] { foundMV.getIndexColumns()[foundMV
-                    .getMainIndexColumn()].column };
+            indexedColumns = new Column[]{foundMV.getIndexColumns()[foundMV
+                    .getMainIndexColumn()].column};
         } else if (foundIndex instanceof PageDataIndex) {
             PageDataIndex foundPD = (PageDataIndex) foundIndex;
             int mainIndexColumn = foundPD.getMainIndexColumn();
             indexedColumns = mainIndexColumn >= 0
-                    ? new Column[] { foundPD.getIndexColumns()[mainIndexColumn].column }
+                    ? new Column[]{foundPD.getIndexColumns()[mainIndexColumn].column}
                     : foundIndex.getColumns();
         } else {
             indexedColumns = foundIndex.getColumns();
